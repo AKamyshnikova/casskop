@@ -14,46 +14,13 @@
 
 ################################################################################
 
-# Name of this service/application
-SERVICE_NAME := casskop
-
 BUILD_FOLDER = .
 MOUNTDIR = $(PWD)
 
-BOOTSTRAP_IMAGE ?= ghcr.io/cscetbon/casskop-bootstrap:0.1.9
 TELEPRESENCE_REGISTRY ?= datawire
 KUBESQUASH_REGISTRY:=
 
 KUBECONFIG ?= ~/.kube/config
-
-# Compute image to use during tests
-ifdef CIRCLE_BRANCH
-  ifeq ($(CIRCLE_BRANCH),master)
-	  E2EIMAGE := $(DOCKER_REPO_BASE)/$(IMAGE_NAME):$(VERSION)
-  else
-	  E2EIMAGE := $(DOCKER_REPO_BASE_TEST)/$(IMAGE_NAME):$(VERSION)
-  endif
-else
-  ifdef CIRCLE_TAG
-	  E2EIMAGE := $(DOCKER_REPO_BASE)/$(IMAGE_NAME):$(BRANCH)
-  else
-		ifeq ($(BRANCH),master)
-	    E2EIMAGE := $(DOCKER_REPO_BASE)/$(IMAGE_NAME):latest
-    else
-	    E2EIMAGE := $(DOCKER_REPO_BASE_TEST)/$(IMAGE_NAME):$(VERSION)
-    endif
-  endif
-endif
-
-build-image:
-	@echo $(BUILD_IMAGE):$(OPERATOR_SDK_VERSION)
-
-params:
-	@echo "CIRCLE_BRANCH = '$(CIRCLE_BRANCH)'"
-	@echo "CIRCLE_TAG = '$(CIRCLE_TAG)'"
-	@echo "Version = '$(VERSION)'"
-	@echo "E2EIMAGE = '$(E2EIMAGE)'"
-
 
 # The default action of this Makefile is to build the development docker image
 default: build
@@ -61,12 +28,6 @@ default: build
 .DEFAULT_GOAL := help
 help:	
 	@grep -E '(^[a-zA-Z_-]+:.*?##.*$$)|(^##)' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}{printf "\033[32m%-30s\033[0m %s\n", $$1, $$2}' | sed -e 's/\[32m##/[33m/'
-
-get-baseversion:
-	@echo $(BASEVERSION)
-
-get-version:
-	@echo $(VERSION)
 
 clean:
 	@rm -rf $(OUT_BIN) || true
@@ -105,39 +66,6 @@ docker-build: docker-generate-files docker-build-operator
 ifdef PUSHLATEST
 	docker tag $(REPOSITORY):$(VERSION) $(REPOSITORY):latest
 endif
-
-# Build the docker development environment
-build-ci-image: deps-development
-	docker build --cache-from $(BUILD_IMAGE):latest \
-	  --build-arg OPERATOR_SDK_VERSION=$(OPERATOR_SDK_VERSION) \
-		-t $(BUILD_IMAGE):latest \
-		-t $(BUILD_IMAGE):$(OPERATOR_SDK_VERSION) \
-		-f $(DEV_DIR)/Dockerfile \
-		.
-
-push-ci-image: deps-development
-	docker push $(BUILD_IMAGE):$(OPERATOR_SDK_VERSION)
-ifdef PUSHLATEST
-	docker push $(BUILD_IMAGE):latest
-endif
-
-build-bootstrap-image:
-	$(MAKE) -C docker/bootstrap build
-push-bootstrap-image:
-	$(MAKE) -C docker/bootstrap push
-
-pipeline:
-	docker run -ti --rm --privileged -v $(PWD):/go/src/github.com/Orange-OpenSource/casskop -w /go/src/github.com/Orange-OpenSource/casskop \
-  --env https_proxy=$(https_proxy) --env http_proxy=$(http_proxy) \
-	$(BUILD_IMAGE):$(OPERATOR_SDK_VERSION) bash
-
-pipeline-e2e:
-	docker run -ti --rm --privileged -v $(PWD):/source -w /source \
-	$(BUILD_IMAGE):$(OPERATOR_SDK_VERSION) bash
-
-# Run a shell into the development docker image
-shell: docker-dev-build
-	docker run  --env GO111MODULE=on -ti --rm -v ~/.kube:/.kube:ro -v $(PWD):$(WORKDIR) --name $(SERVICE_NAME) $(BUILD_IMAGE):$(OPERATOR_SDK_VERSION) /bin/bash
 
 debug-port-forward:
 	kubectl port-forward `kubectl get pod -l app=casskop -o jsonpath="{.items[0].metadata.name}"` 40000:40000
@@ -190,41 +118,10 @@ endif
 
 release: tag image publish
 
-# Test stuff in dev
-docker-unit-test:
-	docker run --env GO111MODULE=on --rm -v $(PWD):$(WORKDIR) -v $(GOPATH)/pkg/mod:/go/pkg/mod -v $(shell go env GOCACHE):/root/.cache/go-build $(BUILD_IMAGE):$(OPERATOR_SDK_VERSION) /bin/bash -c '$(UNIT_TEST_CMD); cat test-report.out; $(UNIT_TEST_COVERAGE)'
-
-docker-unit-test-with-vendor:
-	docker run --env GO111MODULE=on --rm -v $(PWD):$(WORKDIR) -v $(GOPATH)/pkg/mod:/go/pkg/mod -v $(shell go env GOCACHE):/root/.cache/go-build $(BUILD_IMAGE):$(OPERATOR_SDK_VERSION) /bin/bash -c '$(UNIT_TEST_CMD_WITH_VENDOR); cat test-report.out; $(UNIT_TEST_COVERAGE)'
-
-unit-test:
-	$(UNIT_TEST_CMD) && echo "success!" || { echo "failure!"; cat test-report.out; exit 1; }
-	cat test-report.out
-	$(UNIT_TEST_COVERAGE)
-
 unit-test-with-vendor:
 	$(UNIT_TEST_CMD_WITH_VENDOR) && echo "success!" || { echo "failure!"; cat test-report.out; exit 1; }
 	cat test-report.out
 	$(UNIT_TEST_COVERAGE)
-
-define run-operator-cmd
-	docker run  --env GO111MODULE=on -ti --rm -v $(PWD):$(WORKDIR) -u $(UID):$(GID) --name $(SERVICE_NAME) $(BUILD_IMAGE):$(OPERATOR_SDK_VERSION) /bin/sh -c $1
-endef
-
-docker-go-lint:
-	$(call run-operator-cmd,$(GO_LINT_CMD))
-
-# golint is not fully supported by modules yet - https://github.com/golang/lint/issues/409
-go-lint:
-	$(GO_LINT_CMD)
-
-
-# Test if the dependencies we need to run this Makefile are installed
-deps-development:
-ifndef DOCKER
-	@echo "Docker is not available. Please install docker"
-	@exit 1
-endif
 
 #Generate dep for graph
 UNAME := $(shell uname -s)
@@ -244,21 +141,6 @@ image:
 	echo $(REPOSITORY):$(VERSION)
 
 export CGO_ENABLED:=0
-
-ifeq (kuttl-test-fix-arg,$(firstword $(MAKECMDGOALS)))
-  KUTTL_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
-  $(eval $(KUTTL_ARGS):;@:)
-endif
-
-kuttl-test-fix-arg:
-ifeq ($(KUTTL_ARGS),)
-	@echo "A test folder is required" && exit 1
-endif
-	helm install casskop charts/casskop --set image.tag=$(BRANCH)
-	cd test/kuttl; kuttl test --test $(KUTTL_ARGS) --namespace default
-
-dgoss-bootstrap:
-	 IMAGE_TO_TEST=$(BOOTSTRAP_IMAGE) ./docker/bootstrap/dgoss/runChecks.sh
 
 configure-psp:
 	kubectl get clusterrole psp:cassie -o yaml
