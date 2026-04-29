@@ -1,3 +1,12 @@
+apiVersion: kuttl.dev/v1beta1
+kind: TestAssert
+commands:
+  # Kuttl may use the testcase dir or the kuttl suite dir as cwd; script must be committed under test/kuttl/scripts/.
+  - command: >-
+      bash -c 'if test -f ../scripts/dump-backrest-sidecar.sh; then bash ../scripts/dump-backrest-sidecar.sh;
+      elif test -f scripts/dump-backrest-sidecar.sh; then bash scripts/dump-backrest-sidecar.sh;
+      else echo "[e2e] WARN: dump-backrest-sidecar.sh not found (pwd=$(pwd))" >&2; fi'
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

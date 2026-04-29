@@ -9,6 +9,14 @@ import (
 	"strings"
 )
 
+// kuttl sets NAMESPACE for the test case; default matches `kuttl test --namespace default`.
+func kuttlNamespace() string {
+	if ns := os.Getenv("NAMESPACE"); ns != "" {
+		return ns
+	}
+	return "default"
+}
+
 type EnvVar struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
@@ -64,19 +72,43 @@ func (m *multiFlag) Set(value string) error {
 }
 
 func getSts() StatefulSet {
-	out, err := exec.Command("kubectl", "get", "statefulset", "cassandra-e2e-dc1-rack1", "-o", "json").Output()
+	ns := kuttlNamespace()
+	cmd := exec.Command("kubectl", "-n", ns, "get", "statefulset", "cassandra-e2e-dc1-rack1", "-o", "json")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Println("Failed to get StatefulSet:", err)
+		fmt.Fprintf(os.Stderr, "[e2e] getSts: kubectl failed (namespace=%q): %v\n", ns, err)
+		fmt.Fprintf(os.Stderr, "[e2e] kubectl output:\n%s\n", string(out))
 		os.Exit(1)
 	}
 
 	var sts StatefulSet
 	if err := json.Unmarshal(out, &sts); err != nil {
-		fmt.Println("Failed to parse StatefulSet JSON:", err)
+		fmt.Fprintf(os.Stderr, "[e2e] getSts: JSON parse error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[e2e] raw output (first 2k):\n%.2048s\n", string(out))
 		os.Exit(1)
 	}
 
+	fmt.Fprintf(os.Stderr, "[e2e] getSts: namespace=%s sts=cassandra-e2e-dc1-rack1 containers=%s\n",
+		ns, strings.Join(stsContainerNames(sts), ", "))
 	return sts
+}
+
+func stsContainerNames(sts StatefulSet) []string {
+	var names []string
+	for _, c := range sts.Spec.Template.Spec.Containers {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+// K8sStatefulSetContainerName maps logical names used in kuttl --expect/--absent flags to StatefulSet container names.
+func K8sStatefulSetContainerName(logical string) string {
+	switch logical {
+	case "backRestSidecar":
+		return "backrest-sidecar"
+	default:
+		return logical
+	}
 }
 
 const (
