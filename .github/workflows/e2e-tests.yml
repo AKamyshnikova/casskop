@@ -1,6 +1,7 @@
 name: Run e2e tests
 
 on:
+  push:
   workflow_dispatch:
   issue_comment:
     types:
@@ -138,22 +139,59 @@ jobs:
           cluster_name: lvm-test
           config: kindAndLvm/kind-lvm-config.yaml
           wait: 300s
+          # Pin the kind v0.20.0 default image so worker nodes still have apt/bash.
+          node_image: kindest/node:v1.27.3@sha256:3966ac761ae0136263ffdb6cfd4db23ef8a83cba8a463690e98317add2c9ba72
 
       - name: Setup LVM on worker nodes
         if: matrix.test-name == 'storage-upsize'
         run: |
-          WORKER_NODES=$(kubectl get nodes -o name | grep worker | sed 's|node/||')
-          
-          for NODE in $WORKER_NODES; do
-            echo "Setting up LVM on $NODE..."
-            docker exec $NODE bash -c '
-              apt-get update -qq && apt-get install -y -qq lvm2 thin-provisioning-tools > /dev/null 2>&1
+          set -euo pipefail
+          echo "Docker containers:"
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+
+          WORKER_NODES=$(docker ps --format '{{.Names}}' | grep -E 'lvm-test-worker' || true)
+          if [ -z "${WORKER_NODES}" ]; then
+            echo "No lvm-test worker containers found" >&2
+            docker ps -a
+            exit 1
+          fi
+
+          for NODE in ${WORKER_NODES}; do
+            echo "Setting up LVM on ${NODE}..."
+            docker exec "${NODE}" /bin/bash -c '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              . /etc/os-release
+              echo "Node OS: ${PRETTY_NAME:-unknown}"
+              if ! command -v apt-get >/dev/null 2>&1; then
+                echo "apt-get not found on $(hostname)" >&2
+                exit 1
+              fi
+              # kindest/node:v1.27.3 is Debian 11. Current deb.debian.org
+              # mirrors no longer serve bullseye (apt exits 100).
+              mkdir -p /var/lib/apt/lists/partial /etc/apt/apt.conf.d
+              if [ "${ID:-}" = debian ]; then
+                printf "%s\n" \
+                  "deb http://archive.debian.org/debian ${VERSION_CODENAME} main" \
+                  "deb http://archive.debian.org/debian-security ${VERSION_CODENAME}-security main" \
+                  >/etc/apt/sources.list
+                rm -f /etc/apt/sources.list.d/*
+                printf "%s\n" \
+                  "Acquire::Check-Valid-Until false;" \
+                  "Acquire::AllowInsecureRepositories true;" \
+                  >/etc/apt/apt.conf.d/99archive
+              fi
+              apt-get update
+              apt-get install -y --allow-unauthenticated lvm2 thin-provisioning-tools
+              command -v pvcreate
+              command -v vgcreate
+              command -v vgs
               mkdir -p /mnt/disks
               truncate -s 10G /mnt/disks/disk.img
-              LOOP_DEVICE=$(losetup -f)
-              losetup $LOOP_DEVICE /mnt/disks/disk.img
-              pvcreate $LOOP_DEVICE
-              vgcreate lvmvg $LOOP_DEVICE
+              LOOP_DEVICE=$(losetup -f --show /mnt/disks/disk.img)
+              echo "Loop device: ${LOOP_DEVICE}"
+              pvcreate --yes "${LOOP_DEVICE}"
+              vgcreate lvmvg "${LOOP_DEVICE}"
               vgs
             '
           done
